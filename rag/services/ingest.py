@@ -3,10 +3,12 @@ os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 
 import io
 import uuid
-import pymupdf as fitz         # PyMuPDF
+import pymupdf as fitz
 import pytesseract
 from PIL import Image
 from django.conf import settings
+
+from .embeddings import text_model, clip_model, collections
 
 # Windows pe Tesseract ka path batao
 pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
@@ -27,21 +29,19 @@ def extract_page_text(page):
     """Pehle normal text try karta hai, agar bahut kam text mile to OCR karta hai."""
     text = page.get_text().strip()
     if len(text) >= 30:
-        return text, False   # False = OCR nahi lagi
+        return text, False
 
-    # Scanned page lagta hai, OCR karo
     pix = page.get_pixmap(dpi=200)
     img_bytes = pix.tobytes("png")
     img = Image.open(io.BytesIO(img_bytes))
     ocr_text = pytesseract.image_to_string(img)
-    return ocr_text.strip(), True   # True = OCR lagi
+    return ocr_text.strip(), True
 
 
 def ingest_document(doc):
     """
-    Document object leta hai, uski PDF file kholta hai,
-    har page ka text (ya OCR) nikaalta hai, aur embedded images save karta hai.
-    Abhi ke liye sirf text/OCR/images save karega, embeddings Part 4 mein aayenge.
+    PDF ko process karta hai: text/OCR nikaalta hai, chunks banata hai,
+    images extract karta hai, aur sabko Chroma mein embeddings ke saath save karta hai.
     """
     pdf_path = doc.file.path
     pdf = fitz.open(pdf_path)
@@ -49,38 +49,80 @@ def ingest_document(doc):
     img_dir = settings.MEDIA_ROOT / "images"
     img_dir.mkdir(parents=True, exist_ok=True)
 
-    all_pages_data = []   # [{page, text, used_ocr}, ...]
-    saved_images = []     # [{page, filename}, ...]
+    text_col, img_col = collections()
+
+    total_chunks = 0
+    total_images = 0
 
     for page_no, page in enumerate(pdf, start=1):
+        # ---- Text/OCR ----
         text, used_ocr = extract_page_text(page)
-        all_pages_data.append({
-            "page": page_no,
-            "text": text,
-            "used_ocr": used_ocr,
-            "chunks": chunk_text(text),
-        })
+        chunks = chunk_text(text)
 
-        # Is page ke embedded images nikaalo
-        for img_index, img in enumerate(page.get_images(full=True)):
+        if chunks:
+            embeddings = text_model().encode(chunks).tolist()
+            ids = [str(uuid.uuid4()) for _ in chunks]
+            metadatas = [
+                {
+                    "user_id": doc.owner_id,
+                    "doc_id": doc.id,
+                    "doc_name": doc.name,
+                    "page": page_no,
+                    "used_ocr": used_ocr,
+                }
+                for _ in chunks
+            ]
+            text_col.add(ids=ids, documents=chunks, embeddings=embeddings, metadatas=metadatas)
+            total_chunks += len(chunks)
+
+        # ---- Images ----
+        for img in page.get_images(full=True):
             xref = img[0]
             base = pdf.extract_image(xref)
             img_bytes = base["image"]
             ext = base["ext"]
 
-            # Bahut chhoti images (icons/logos) skip karo
             if base["width"] < 150 or base["height"] < 150:
-                continue
+                continue   # chhote icons/logos skip
 
             fname = f"{doc.id}_{uuid.uuid4().hex}.{ext}"
             (img_dir / fname).write_bytes(img_bytes)
-            saved_images.append({"page": page_no, "filename": fname})
+
+            pil_img = Image.open(img_dir / fname).convert("RGB")
+            img_embedding = clip_model().encode(pil_img).tolist()
+
+            img_col.add(
+                ids=[str(uuid.uuid4())],
+                documents=[f"image on page {page_no} of {doc.name}"],
+                embeddings=[img_embedding],
+                metadatas=[{
+                    "user_id": doc.owner_id,
+                    "doc_id": doc.id,
+                    "doc_name": doc.name,
+                    "page": page_no,
+                    "filename": fname,
+                }],
+            )
+            total_images += 1
 
     doc.num_pages = len(pdf)
     doc.status = "ready"
     doc.save()
 
-    return {
-        "pages": all_pages_data,
-        "images": saved_images,
-    }
+    return {"pages": len(pdf), "chunks_saved": total_chunks, "images_saved": total_images}
+
+
+def delete_document_data(doc):
+    """Document delete hone par uske saare vectors aur images bhi hatata hai."""
+    text_col, img_col = collections()
+    img_dir = settings.MEDIA_ROOT / "images"
+
+    img_records = img_col.get(where={"doc_id": doc.id}, include=["metadatas"])
+    for m in img_records["metadatas"]:
+        fpath = img_dir / m["filename"]
+        if fpath.exists():
+            fpath.unlink()
+
+    text_col.delete(where={"doc_id": doc.id})
+    img_col.delete(where={"doc_id": doc.id})
+    doc.file.delete(save=False)
