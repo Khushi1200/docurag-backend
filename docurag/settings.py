@@ -145,6 +145,7 @@ MAX_UPLOAD_MB = 25
 # Groq
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 GROQ_MODEL = os.getenv("GROQ_MODEL")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 # API settings
 REST_FRAMEWORK = {
