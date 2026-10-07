@@ -13,12 +13,12 @@ r = client.chat.completions.create(
 )
 print("Groq says:", r.choices[0].message.content)
 
-print("2) Hugging Face text model (pehli baar ~90 MB download)...")
+print("2) Hugging Face text model...")
 from sentence_transformers import SentenceTransformer
 m = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
 print("Text embedding shape:", m.encode(["hello world"]).shape)
 
-print("3) CLIP image model (pehli baar ~600 MB download)...")
+print("3) CLIP image model...")
 c = SentenceTransformer("sentence-transformers/clip-ViT-B-32")
 print("CLIP embedding shape:", c.encode(["a bar chart"]).shape)
 

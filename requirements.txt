@@ -12,3 +12,4 @@ sentence-transformers>=3.0
 chromadb>=0.5
 
 groq>=0.9
+requests>=2.31
