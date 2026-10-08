@@ -12,4 +12,5 @@ urlpatterns = [
     path("documents/upload/", views.UploadView.as_view()),
     path("documents/<int:pk>/", views.DocumentDetailView.as_view()),
     path("ask/", views.AskView.as_view()),
+    path("evaluate/", views.EvaluateView.as_view()),
 ]
